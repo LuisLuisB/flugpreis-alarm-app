@@ -118,6 +118,13 @@
       </select></label>
     <label class="full hidden" id="premLimitLabel">Preisgrenze Premium Economy € (leer = nur anzeigen)
       <input name="price_limit_premium" type="number" min="1"></label>
+    <label class="full">Wie oft prüfen?
+      <select name="check_every_days">
+        <option value="1">Täglich</option>
+        <option value="2">Alle 2 Tage</option>
+        <option value="3">Alle 3 Tage</option>
+        <option value="7">Einmal pro Woche</option>
+      </select></label>
     <label class="full">Alarm bei Preissturz
       <select name="drop_alert_percent">
         <option value="0">aus</option>
@@ -182,7 +189,7 @@ async function loadLastRun() {
   if (!run) return;
   const when = new Date(run.created_at).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
   const state = run.status !== "completed" ? "⏳ läuft gerade" : run.conclusion === "success" ? "✓ erfolgreich" : "⚠️ fehlgeschlagen";
-  $("lastRun").innerHTML = `Letzte Prüfung: ${when} · ${state} · <a href="${run.html_url}" target="_blank">Details</a> · täglich 8 Uhr`;
+  $("lastRun").innerHTML = `Letzte Prüfung: ${when} · ${state} · <a href="${run.html_url}" target="_blank">Details</a> · läuft täglich um 8 Uhr`;
 }
 
 // ---------- Hilfen ----------
@@ -204,7 +211,9 @@ const origins = (a) => Array.isArray(a.origin) ? a.origin : String(a.origin).spl
 const AIRLINES = { FR: "Ryanair", W6: "Wizz Air", U2: "easyJet", EW: "Eurowings", VY: "Vueling", LH: "Lufthansa", DE: "Condor", PC: "Pegasus" };
 const CLS = { economy: "Economy", premium: "Premium Eco" };
 const classesOf = (a) => (a.classes && a.classes.length ? a.classes : ["economy"]);
+const every = (a) => Math.max(1, +a.check_every_days || 1);
 const searches = (a) => (a.active === false ? 0 : (2 * (+a.flex_days || 0) + 1) * classesOf(a).length);
+const EVERY = { 1: "täglich", 2: "alle 2 Tage", 3: "alle 3 Tage", 7: "wöchentlich" };
 $("airlineChips").innerHTML = Object.entries(AIRLINES).map(([c, n]) => `<label><input type="checkbox" name="ex_${c}"> ${n}</label>`).join("");
 const fmtDate = (d) => d ? new Date(d + "T00:00").toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -233,7 +242,7 @@ function sparkline(series, limit) {
 
 // ---------- Anzeige ----------
 function render() {
-  const used = alarms.reduce((s, a) => s + searches(a), 0) * 30;
+  const used = Math.round(alarms.reduce((s, a) => s + searches(a) * 30 / every(a), 0));
   $("budgetText").textContent = `${used} von ${FREE}`;
   $("budgetBar").style.width = Math.min(100, used / FREE * 100) + "%";
   $("budgetBar").style.background = used > FREE ? "var(--warn)" : "var(--accent)";
@@ -274,6 +283,7 @@ function render() {
         · 👤 ${a.adults || 1} · 🎒 ${a.carry_on_bags || 0}${a.checked_bag ? " · 🧳" : ""}${a.max_stops != null ? ` · max. ${a.max_stops} Umstieg(e)` : ""}
         ${(a.exclude_airlines || []).length ? `<br>🚫 ${a.exclude_airlines.map(c => AIRLINES[c] || c).join(", ")}` : ""}
         ${+a.drop_alert_percent ? ` · 📉 Alarm ab −${a.drop_alert_percent} %` : ""}
+        <br>🔁 Prüfung ${EVERY[every(a)] || `alle ${every(a)} Tage`} · ${Math.round(searches(a) * 30 / every(a))} Suchen/Monat
       </div>
       ${best != null ? `<div class="muted">Tiefstwert ${Math.round(best)} € · ${prices.length} Prüfungen${lastRow && lastRow.details ? " · zuletzt: " + esc(lastRow.airline) + ", " + esc(lastRow.details) : ""}</div>` : `<div class="muted">Noch nicht geprüft</div>`}
       ${lastRow && lastRow.fehler ? `<div class="err muted">Fehler: ${esc(lastRow.fehler)}</div>` : ""}
@@ -315,6 +325,7 @@ function openEditor(i = null) {
     f.max_stops.value = a.max_stops ?? ""; f.price_limit.value = a.price_limit; f.checked_bag.checked = !!a.checked_bag;
     f.classes.value = classesOf(a).join(","); f.price_limit_premium.value = a.price_limit_premium || "";
     f.drop_alert_percent.value = String(a.drop_alert_percent || 0);
+    f.check_every_days.value = String(every(a));
     const ex = a.exclude_airlines || [];
     Object.keys(AIRLINES).forEach(c => f["ex_" + c].checked = ex.includes(c));
     f.exclude_more.value = ex.filter(c => !AIRLINES[c]).join(", ");
@@ -346,6 +357,7 @@ $("alarmForm").onsubmit = async (ev) => {
     price_limit: +f.price_limit.value,
     classes: f.classes.value.split(","),
     ...(f.classes.value === "economy,premium" && f.price_limit_premium.value ? { price_limit_premium: +f.price_limit_premium.value } : {}),
+    check_every_days: +f.check_every_days.value,
     ...(+f.drop_alert_percent.value ? { drop_alert_percent: +f.drop_alert_percent.value } : {}),
     exclude_airlines: [...Object.keys(AIRLINES).filter(c => f["ex_" + c].checked),
       ...f.exclude_more.value.split(/[ ,;]+/).map(c => c.trim().toUpperCase()).filter(c => /^[A-Z0-9]{2}$/.test(c))],
