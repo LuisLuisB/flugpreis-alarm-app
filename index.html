@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Flugalarm">
+<meta name="theme-color" content="#0a7cff">
+<title>Flugpreis-Alarm</title>
+<style>
+  * { box-sizing: border-box; }
+  :root { color-scheme: light dark; --accent:#0a7cff; --ok:#1a9e55; --warn:#d33; --muted:#888; --card:#8881; --line:#8884; }
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px; margin: 0 auto;
+         padding: max(16px, env(safe-area-inset-top)) 16px 40px; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+  h1 { font-size: 1.5rem; margin: 0; }
+  .muted { color: var(--muted); font-size: .85rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin: 12px 0; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .route { font-size: 1.2rem; font-weight: 600; }
+  .price { font-size: 1.7rem; font-weight: 700; text-align: right; }
+  .hit { color: var(--ok); }
+  .paused { opacity: .5; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 6px; }
+  .bar > div { height: 100%; background: var(--accent); }
+  button, .btn { font: inherit; font-size: .95rem; padding: 9px 14px; border-radius: 10px; border: 0;
+                 background: var(--accent); color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.light, .btn.light { background: #8882; color: inherit; }
+  button.danger { background: #d332; color: var(--warn); }
+  button:disabled { opacity: .5; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .big { width: 100%; padding: 13px; font-size: 1.05rem; margin-top: 8px; }
+  form { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 10px; }
+  label { font-size: .85rem; display: flex; flex-direction: column; gap: 4px; }
+  input, select { font-size: 1rem; padding: 9px; border-radius: 9px; border: 1px solid var(--line); width: 100%; min-width: 0; background: transparent; color: inherit; }
+  input[autocapitalize=characters] { text-transform: uppercase; }
+  input[type=checkbox] { width: auto; transform: scale(1.3); }
+  .full { grid-column: 1 / -1; }
+  .check { flex-direction: row; align-items: center; gap: 10px; font-size: .95rem; }
+  .err { color: var(--warn); }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #222; color: #fff;
+           padding: 10px 16px; border-radius: 20px; font-size: .9rem; display: none; max-width: 90%; }
+  svg.spark { width: 100%; height: 40px; display: block; margin-top: 8px; }
+  .hidden { display: none; }
+  ol { padding-left: 20px; } li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>✈️ Flugpreis-Alarm</h1>
+  <button class="light" id="btnSettings" title="Einstellungen">⚙️</button>
+</header>
+
+<!-- Einrichtung: einmalig Token eingeben -->
+<section id="setup" class="card hidden">
+  <b>Einmalige Einrichtung</b>
+  <ol class="muted">
+    <li>Auf GitHub: Profilbild → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>
+    <li>Repository access: <b>Only select repositories</b> → <code>flugpreis-alarm</code>.</li>
+    <li>Permissions: <b>Contents</b> = Read and write, <b>Actions</b> = Read and write.</li>
+    <li>Token kopieren und hier einfügen. Er bleibt nur auf diesem Gerät gespeichert.</li>
+  </ol>
+  <form id="setupForm">
+    <label class="full">GitHub-Token<input id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_…" required></label>
+    <label class="full">Repository<input id="repoInput" value="LuisLuisB/flugpreis-alarm" required></label>
+    <button class="full big" type="submit">Speichern</button>
+    <button class="full light hidden" type="button" id="btnLogout">Token von diesem Gerät löschen</button>
+  </form>
+</section>
+
+<main id="main" class="hidden">
+  <div class="card">
+    <div class="row"><span>Gratis-Suchen pro Monat</span><b id="budgetText">–</b></div>
+    <div class="bar"><div id="budgetBar" style="width:0"></div></div>
+    <div class="muted" id="lastRun" style="margin-top:6px">Letzte Prüfung: –</div>
+    <div class="actions">
+      <button class="light" id="btnRun">🔄 Jetzt prüfen</button>
+      <button class="light" id="btnReload">Aktualisieren</button>
+    </div>
+  </div>
+
+  <button class="big" id="btnNew">＋ Neuer Alarm</button>
+  <div id="list"></div>
+</main>
+
+<!-- Formular für neuen / geänderten Alarm -->
+<section id="editor" class="card hidden">
+  <b id="editorTitle">Neuer Alarm</b>
+  <form id="alarmForm" style="margin-top:10px">
+    <label class="full">Name (zur Erkennung)<input name="name" placeholder="z. B. Barcelona im Mai" required></label>
+    <label>Von<input name="o1" placeholder="DUS" maxlength="3" required autocapitalize="characters"></label>
+    <label>oder von (optional)<input name="o2" placeholder="CGN" maxlength="3" autocapitalize="characters"></label>
+    <label class="full">Nach<input name="destination" placeholder="BCN" maxlength="3" required autocapitalize="characters"></label>
+    <label>Hinflug<input name="outbound_date" type="date" required></label>
+    <label>Rückflug (leer = nur Hin)<input name="return_date" type="date"></label>
+    <label class="full">Flexibel
+      <select name="flex_days">
+        <option value="0">Genau an diesen Tagen (1 Suche)</option>
+        <option value="1">± 1 Tag (3 Suchen)</option>
+        <option value="2">± 2 Tage (5 Suchen)</option>
+      </select></label>
+    <label>Personen<input name="adults" type="number" min="1" max="9" value="1"></label>
+    <label>Handgepäck-Stücke<input name="carry_on_bags" type="number" min="0" max="2" value="1"></label>
+    <label>Umstiege
+      <select name="max_stops"><option value="">egal</option><option value="0">nur direkt</option>
+        <option value="1">max. 1</option><option value="2">max. 2</option></select></label>
+    <label>Preisgrenze € (gesamt)<input name="price_limit" type="number" min="1" required></label>
+    <label class="full check"><input name="checked_bag" type="checkbox"> Ich brauche Aufgabegepäck (nur Hinweis)</label>
+    <button class="full big" type="submit">Speichern</button>
+    <button class="full light" type="button" id="btnCancel">Abbrechen</button>
+  </form>
+</section>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const FREE = 250;
+let cfg = { token: localStorage.getItem("fa_token"), repo: localStorage.getItem("fa_repo") || "LuisLuisB/flugpreis-alarm" };
+let alarms = [], alarmsSha = null, history = [], editIndex = null;
+
+// ---------- GitHub-Zugriff ----------
+async function gh(path, opts = {}) {
+  const r = await fetch(`https://api.github.com/repos/${cfg.repo}${path}`, {
+    ...opts,
+    headers: { Authorization: `Bearer ${cfg.token}`, Accept: "application/vnd.github+json", ...(opts.headers || {}) },
+  });
+  if (r.status === 401) throw new Error("Token ungültig oder abgelaufen (⚙️ → neu eingeben)");
+  if (r.status === 404 && !opts.allow404) throw new Error("Nicht gefunden – stimmt das Repository und darf der Token es lesen?");
+  if (!r.ok && r.status !== 404) throw new Error(`GitHub-Fehler ${r.status}: ${(await r.text()).slice(0, 120)}`);
+  if (r.status === 404 || r.status === 204) return null;
+  return r.json();
+}
+const b64decode = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, "")), c => c.charCodeAt(0)));
+const b64encode = (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+
+async function loadAll() {
+  const f = await gh("/contents/alarms.json");
+  alarmsSha = f.sha;
+  alarms = JSON.parse(b64decode(f.content));
+  const h = await gh("/contents/data/history.csv", { allow404: true });
+  history = h ? parseCsv(b64decode(h.content)) : [];
+  render();
+  loadLastRun().catch(() => {});
+}
+
+async function saveAlarms(message) {
+  const body = { message, content: b64encode(JSON.stringify(alarms, null, 2) + "\n"), sha: alarmsSha };
+  const r = await gh("/contents/alarms.json", { method: "PUT", body: JSON.stringify(body) });
+  alarmsSha = r.content.sha;
+  render();
+  toast("Gespeichert ✓");
+}
+
+async function loadLastRun() {
+  const r = await gh("/actions/workflows/flugpreis-check.yml/runs?per_page=1");
+  const run = r && r.workflow_runs[0];
+  if (!run) return;
+  const when = new Date(run.created_at).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
+  const state = run.status !== "completed" ? "⏳ läuft gerade" : run.conclusion === "success" ? "✓ erfolgreich" : "⚠️ fehlgeschlagen";
+  $("lastRun").innerHTML = `Letzte Prüfung: ${when} · ${state} · <a href="${run.html_url}" target="_blank">Details</a> · täglich 8 Uhr`;
+}
+
+// ---------- Hilfen ----------
+function parseCsv(text) {
+  const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') q = false; else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else if (c !== "\r") cur += c;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  const [head, ...data] = rows;
+  return data.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
+}
+const origins = (a) => Array.isArray(a.origin) ? a.origin : String(a.origin).split(",");
+const searches = (a) => (a.active === false ? 0 : 2 * (+a.flex_days || 0) + 1);
+const fmtDate = (d) => d ? new Date(d + "T00:00").toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function toast(msg, ms = 2500) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
+
+function flightsUrl(a) {
+  const from = origins(a)[0], q = `Flights from ${from} to ${a.destination} on ${a.outbound_date}` + (a.return_date ? ` through ${a.return_date}` : " one way");
+  return "https://www.google.com/travel/flights?hl=de&curr=EUR&q=" + encodeURIComponent(q);
+}
+
+function sparkline(points, limit) {
+  if (points.length < 2) return "";
+  const w = 300, h = 40, all = [...points, limit], min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
+  const x = (i) => (i / (points.length - 1)) * w, y = (v) => h - 4 - ((v - min) / span) * (h - 8);
+  const path = points.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <line x1="0" x2="${w}" y1="${y(limit)}" y2="${y(limit)}" stroke="#1a9e55" stroke-dasharray="4 4" stroke-width="1"/>
+    <path d="${path}" fill="none" stroke="#0a7cff" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+// ---------- Anzeige ----------
+function render() {
+  const used = alarms.reduce((s, a) => s + searches(a), 0) * 30;
+  $("budgetText").textContent = `${used} von ${FREE}`;
+  $("budgetBar").style.width = Math.min(100, used / FREE * 100) + "%";
+  $("budgetBar").style.background = used > FREE ? "var(--warn)" : "var(--accent)";
+
+  const today = new Date().toISOString().slice(0, 10);
+  $("list").innerHTML = alarms.length ? "" : `<p class="muted">Noch keine Alarme. Tippe auf „Neuer Alarm“.</p>`;
+  alarms.forEach((a, i) => {
+    const h = history.filter(r => r.alarm === a.name);
+    const prices = h.map(r => parseFloat(r.preis_eur)).filter(v => !isNaN(v));
+    const lastRow = h[h.length - 1];
+    const last = prices[prices.length - 1], best = prices.length ? Math.min(...prices) : null;
+    const hit = last != null && last <= a.price_limit;
+    const expired = a.outbound_date < today && !(+a.flex_days);
+    const div = document.createElement("div");
+    div.className = "card" + (a.active === false ? " paused" : "");
+    div.innerHTML = `
+      <div class="row">
+        <div>
+          <div class="route">${esc(origins(a).join(" / "))} → ${esc(a.destination)}</div>
+          <div class="muted">${esc(a.name)}</div>
+        </div>
+        <div>
+          <div class="price ${hit ? "hit" : ""}">${last != null ? Math.round(last) + " €" : "–"}</div>
+          <div class="muted" style="text-align:right">Grenze ${Math.round(a.price_limit)} €</div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        📅 ${fmtDate(a.outbound_date)}${a.return_date ? " – " + fmtDate(a.return_date) : " (nur Hin)"}${+a.flex_days ? ` ± ${a.flex_days} Tag(e)` : ""}
+        · 👤 ${a.adults || 1} · 🎒 ${a.carry_on_bags || 0}${a.checked_bag ? " · 🧳" : ""}${a.max_stops != null ? ` · max. ${a.max_stops} Umstieg(e)` : ""}
+      </div>
+      ${best != null ? `<div class="muted">Tiefstwert ${Math.round(best)} € · ${prices.length} Prüfungen${lastRow && lastRow.details ? " · zuletzt: " + esc(lastRow.airline) + ", " + esc(lastRow.details) : ""}</div>` : `<div class="muted">Noch nicht geprüft</div>`}
+      ${lastRow && lastRow.fehler ? `<div class="err muted">Fehler: ${esc(lastRow.fehler)}</div>` : ""}
+      ${expired ? `<div class="err muted">Abflugdatum ist vorbei – bitte löschen.</div>` : ""}
+      ${sparkline(prices.slice(-30), a.price_limit)}
+      <div class="actions">
+        <a class="btn light" href="${flightsUrl(a)}" target="_blank">Google Flights</a>
+        <button class="light" data-act="edit">Bearbeiten</button>
+        <button class="light" data-act="toggle">${a.active === false ? "▶︎ Aktivieren" : "⏸ Pausieren"}</button>
+        <button class="danger" data-act="delete">Löschen</button>
+      </div>`;
+    div.querySelectorAll("button").forEach(b => b.onclick = () => action(b.dataset.act, i));
+    $("list").appendChild(div);
+  });
+}
+
+async function action(act, i) {
+  const a = alarms[i];
+  try {
+    if (act === "edit") return openEditor(i);
+    if (act === "toggle") { a.active = a.active === false; await saveAlarms(`${a.active ? "Aktiviert" : "Pausiert"}: ${a.name}`); }
+    if (act === "delete") {
+      if (!confirm(`„${a.name}“ wirklich löschen?`)) return;
+      alarms.splice(i, 1); await saveAlarms(`Gelöscht: ${a.name}`);
+    }
+  } catch (e) { toast(e.message, 5000); await loadAll().catch(() => {}); }
+}
+
+// ---------- Formular ----------
+function openEditor(i = null) {
+  editIndex = i;
+  const f = $("alarmForm"); f.reset();
+  $("editorTitle").textContent = i == null ? "Neuer Alarm" : "Alarm bearbeiten";
+  if (i != null) {
+    const a = alarms[i], o = origins(a);
+    f.name.value = a.name; f.o1.value = o[0] || ""; f.o2.value = o[1] || ""; f.destination.value = a.destination;
+    f.outbound_date.value = a.outbound_date; f.return_date.value = a.return_date || "";
+    f.flex_days.value = a.flex_days || 0; f.adults.value = a.adults || 1; f.carry_on_bags.value = a.carry_on_bags || 0;
+    f.max_stops.value = a.max_stops ?? ""; f.price_limit.value = a.price_limit; f.checked_bag.checked = !!a.checked_bag;
+  }
+  $("main").classList.add("hidden"); $("editor").classList.remove("hidden"); window.scrollTo(0, 0);
+}
+function closeEditor() { $("editor").classList.add("hidden"); $("main").classList.remove("hidden"); }
+
+$("alarmForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  const name = f.name.value.trim();
+  if (alarms.some((a, j) => a.name === name && j !== editIndex)) return toast("Diesen Namen gibt es schon.");
+  if (f.return_date.value && f.return_date.value < f.outbound_date.value) return toast("Rückflug liegt vor dem Hinflug.");
+  const a = {
+    name,
+    origin: [f.o1.value, f.o2.value].map(s => s.trim().toUpperCase()).filter(Boolean),
+    destination: f.destination.value.trim().toUpperCase(),
+    outbound_date: f.outbound_date.value,
+    ...(f.return_date.value ? { return_date: f.return_date.value } : {}),
+    flex_days: +f.flex_days.value,
+    adults: +f.adults.value,
+    carry_on_bags: +f.carry_on_bags.value,
+    checked_bag: f.checked_bag.checked,
+    ...(f.max_stops.value !== "" ? { max_stops: +f.max_stops.value } : {}),
+    price_limit: +f.price_limit.value,
+    active: editIndex == null ? true : alarms[editIndex].active !== false,
+  };
+  const btn = f.querySelector("button[type=submit]"); btn.disabled = true;
+  try {
+    if (editIndex == null) alarms.push(a); else alarms[editIndex] = a;
+    await saveAlarms(`${editIndex == null ? "Neu" : "Geändert"}: ${name}`);
+    closeEditor();
+  } catch (e) { toast(e.message, 5000); await loadAll().catch(() => {}); }
+  btn.disabled = false;
+};
+$("btnCancel").onclick = closeEditor;
+$("btnNew").onclick = () => openEditor();
+$("btnReload").onclick = () => loadAll().then(() => toast("Aktualisiert")).catch(e => toast(e.message, 5000));
+$("btnRun").onclick = async () => {
+  try {
+    await gh("/actions/workflows/flugpreis-check.yml/dispatches", { method: "POST", body: JSON.stringify({ ref: "main" }) });
+    toast("Prüfung gestartet – in ca. 1 Minute „Aktualisieren“ tippen", 4000);
+    setTimeout(() => loadLastRun().catch(() => {}), 4000);
+  } catch (e) { toast(e.message, 5000); }
+};
+
+// ---------- Einrichtung ----------
+function showSetup() {
+  $("tokenInput").value = cfg.token || ""; $("repoInput").value = cfg.repo;
+  $("btnLogout").classList.toggle("hidden", !cfg.token);
+  $("setup").classList.remove("hidden"); $("main").classList.add("hidden"); $("editor").classList.add("hidden");
+}
+$("btnSettings").onclick = () => $("setup").classList.contains("hidden") ? showSetup() : start();
+$("setupForm").onsubmit = (ev) => {
+  ev.preventDefault();
+  cfg.token = $("tokenInput").value.trim(); cfg.repo = $("repoInput").value.trim();
+  localStorage.setItem("fa_token", cfg.token); localStorage.setItem("fa_repo", cfg.repo);
+  start();
+};
+$("btnLogout").onclick = () => { localStorage.removeItem("fa_token"); cfg.token = null; showSetup(); };
+
+async function start() {
+  if (!cfg.token) return showSetup();
+  $("setup").classList.add("hidden"); $("main").classList.remove("hidden");
+  try { await loadAll(); } catch (e) { toast(e.message, 6000); $("list").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+start();
+</script>
+</body>
+</html>
