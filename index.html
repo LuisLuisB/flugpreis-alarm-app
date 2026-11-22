@@ -42,6 +42,10 @@
            padding: 10px 16px; border-radius: 20px; font-size: .9rem; display: none; max-width: 90%; }
   svg.spark { width: 100%; height: 40px; display: block; margin-top: 8px; }
   .hidden { display: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips label { flex-direction: row; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 18px; padding: 6px 10px; font-size: .9rem; }
+  .prem { color: #8a4fff; }
+  .sub2 { display:flex; justify-content: space-between; margin-top: 6px; font-size: .95rem; }
   ol { padding-left: 20px; } li { margin-bottom: 6px; }
 </style>
 </head>
@@ -106,6 +110,25 @@
       <select name="max_stops"><option value="">egal</option><option value="0">nur direkt</option>
         <option value="1">max. 1</option><option value="2">max. 2</option></select></label>
     <label>Preisgrenze € (gesamt)<input name="price_limit" type="number" min="1" required></label>
+    <label class="full">Klasse
+      <select name="classes">
+        <option value="economy">Nur Economy</option>
+        <option value="economy,premium">Economy + Premium (2× Suchen)</option>
+        <option value="premium">Nur Premium Economy</option>
+      </select></label>
+    <label class="full hidden" id="premLimitLabel">Preisgrenze Premium Economy € (leer = nur anzeigen)
+      <input name="price_limit_premium" type="number" min="1"></label>
+    <label class="full">Alarm bei Preissturz
+      <select name="drop_alert_percent">
+        <option value="0">aus</option>
+        <option value="15">15 % unter dem Durchschnitt</option>
+        <option value="20">20 % unter dem Durchschnitt</option>
+        <option value="30">30 % unter dem Durchschnitt</option>
+      </select></label>
+    <div class="full"><div style="font-size:.85rem;margin-bottom:6px">Airlines ausschließen</div>
+      <div class="chips" id="airlineChips"></div>
+      <label style="margin-top:8px">Weitere (2-stellige Codes, mit Komma)<input name="exclude_more" placeholder="z. B. DE, X3" autocapitalize="characters"></label>
+    </div>
     <label class="full check"><input name="checked_bag" type="checkbox"> Ich brauche Aufgabegepäck (nur Hinweis)</label>
     <button class="full big" type="submit">Speichern</button>
     <button class="full light" type="button" id="btnCancel">Abbrechen</button>
@@ -178,7 +201,11 @@ function parseCsv(text) {
   return data.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
 }
 const origins = (a) => Array.isArray(a.origin) ? a.origin : String(a.origin).split(",");
-const searches = (a) => (a.active === false ? 0 : 2 * (+a.flex_days || 0) + 1);
+const AIRLINES = { FR: "Ryanair", W6: "Wizz Air", U2: "easyJet", EW: "Eurowings", VY: "Vueling", LH: "Lufthansa", DE: "Condor", PC: "Pegasus" };
+const CLS = { economy: "Economy", premium: "Premium Eco" };
+const classesOf = (a) => (a.classes && a.classes.length ? a.classes : ["economy"]);
+const searches = (a) => (a.active === false ? 0 : (2 * (+a.flex_days || 0) + 1) * classesOf(a).length);
+$("airlineChips").innerHTML = Object.entries(AIRLINES).map(([c, n]) => `<label><input type="checkbox" name="ex_${c}"> ${n}</label>`).join("");
 const fmtDate = (d) => d ? new Date(d + "T00:00").toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function toast(msg, ms = 2500) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
@@ -188,14 +215,20 @@ function flightsUrl(a) {
   return "https://www.google.com/travel/flights?hl=de&curr=EUR&q=" + encodeURIComponent(q);
 }
 
-function sparkline(points, limit) {
-  if (points.length < 2) return "";
-  const w = 300, h = 40, all = [...points, limit], min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
-  const x = (i) => (i / (points.length - 1)) * w, y = (v) => h - 4 - ((v - min) / span) * (h - 8);
-  const path = points.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-    <line x1="0" x2="${w}" y1="${y(limit)}" y2="${y(limit)}" stroke="#1a9e55" stroke-dasharray="4 4" stroke-width="1"/>
-    <path d="${path}" fill="none" stroke="#0a7cff" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+function sparkline(series, limit) {
+  // series: [{points, color}]
+  series = series.filter(s => s.points.length >= 2);
+  if (!series.length) return "";
+  const w = 300, h = 40, all = series.flatMap(s => s.points).concat(limit ? [limit] : []);
+  const min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
+  const y = (v) => h - 4 - ((v - min) / span) * (h - 8);
+  const paths = series.map(s => {
+    const x = (i) => (i / (s.points.length - 1)) * w;
+    const d = s.points.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  }).join("");
+  const line = limit ? `<line x1="0" x2="${w}" y1="${y(limit)}" y2="${y(limit)}" stroke="#1a9e55" stroke-dasharray="4 4" stroke-width="1"/>` : "";
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${line}${paths}</svg>`;
 }
 
 // ---------- Anzeige ----------
@@ -208,11 +241,17 @@ function render() {
   const today = new Date().toISOString().slice(0, 10);
   $("list").innerHTML = alarms.length ? "" : `<p class="muted">Noch keine Alarme. Tippe auf „Neuer Alarm“.</p>`;
   alarms.forEach((a, i) => {
-    const h = history.filter(r => r.alarm === a.name);
-    const prices = h.map(r => parseFloat(r.preis_eur)).filter(v => !isNaN(v));
+    const cls = classesOf(a), main = cls[0];
+    const rowsOf = (c) => history.filter(r => r.alarm === a.name && (r.klasse || "economy") === c);
+    const pricesOf = (c) => rowsOf(c).map(r => parseFloat(r.preis_eur)).filter(v => !isNaN(v));
+    const limitOf = (c) => c === "economy" ? a.price_limit : (a.price_limit_premium ?? (cls.length === 1 ? a.price_limit : null));
+    const h = rowsOf(main), prices = pricesOf(main);
     const lastRow = h[h.length - 1];
     const last = prices[prices.length - 1], best = prices.length ? Math.min(...prices) : null;
-    const hit = last != null && last <= a.price_limit;
+    const hit = last != null && limitOf(main) != null && last <= limitOf(main);
+    const second = cls[1];
+    const p2 = second ? pricesOf(second) : [], last2 = p2[p2.length - 1];
+    const hit2 = second && last2 != null && limitOf(second) != null && last2 <= limitOf(second);
     const expired = a.outbound_date < today && !(+a.flex_days);
     const div = document.createElement("div");
     div.className = "card" + (a.active === false ? " paused" : "");
@@ -220,21 +259,26 @@ function render() {
       <div class="row">
         <div>
           <div class="route">${esc(origins(a).join(" / "))} → ${esc(a.destination)}</div>
-          <div class="muted">${esc(a.name)}</div>
+          <div class="muted">${esc(a.name)} · ${CLS[main]}</div>
         </div>
         <div>
           <div class="price ${hit ? "hit" : ""}">${last != null ? Math.round(last) + " €" : "–"}</div>
-          <div class="muted" style="text-align:right">Grenze ${Math.round(a.price_limit)} €</div>
+          <div class="muted" style="text-align:right">${limitOf(main) ? "Grenze " + Math.round(limitOf(main)) + " €" : "nur Anzeige"}</div>
         </div>
       </div>
+      ${second ? `<div class="sub2"><span class="prem">${CLS[second]}</span>
+        <span><b class="${hit2 ? "hit" : "prem"}">${last2 != null ? Math.round(last2) + " €" : "–"}</b>
+        <span class="muted">${limitOf(second) ? " · Grenze " + Math.round(limitOf(second)) + " €" : " · nur Anzeige"}${p2.length ? " · Tief " + Math.round(Math.min(...p2)) + " €" : ""}</span></span></div>` : ""}
       <div class="muted" style="margin-top:6px">
         📅 ${fmtDate(a.outbound_date)}${a.return_date ? " – " + fmtDate(a.return_date) : " (nur Hin)"}${+a.flex_days ? ` ± ${a.flex_days} Tag(e)` : ""}
         · 👤 ${a.adults || 1} · 🎒 ${a.carry_on_bags || 0}${a.checked_bag ? " · 🧳" : ""}${a.max_stops != null ? ` · max. ${a.max_stops} Umstieg(e)` : ""}
+        ${(a.exclude_airlines || []).length ? `<br>🚫 ${a.exclude_airlines.map(c => AIRLINES[c] || c).join(", ")}` : ""}
+        ${+a.drop_alert_percent ? ` · 📉 Alarm ab −${a.drop_alert_percent} %` : ""}
       </div>
       ${best != null ? `<div class="muted">Tiefstwert ${Math.round(best)} € · ${prices.length} Prüfungen${lastRow && lastRow.details ? " · zuletzt: " + esc(lastRow.airline) + ", " + esc(lastRow.details) : ""}</div>` : `<div class="muted">Noch nicht geprüft</div>`}
       ${lastRow && lastRow.fehler ? `<div class="err muted">Fehler: ${esc(lastRow.fehler)}</div>` : ""}
       ${expired ? `<div class="err muted">Abflugdatum ist vorbei – bitte löschen.</div>` : ""}
-      ${sparkline(prices.slice(-30), a.price_limit)}
+      ${sparkline([{ points: prices.slice(-30), color: "#0a7cff" }, { points: p2.slice(-30), color: "#8a4fff" }], limitOf(main))}
       <div class="actions">
         <a class="btn light" href="${flightsUrl(a)}" target="_blank">Google Flights</a>
         <button class="light" data-act="edit">Bearbeiten</button>
@@ -269,9 +313,17 @@ function openEditor(i = null) {
     f.outbound_date.value = a.outbound_date; f.return_date.value = a.return_date || "";
     f.flex_days.value = a.flex_days || 0; f.adults.value = a.adults || 1; f.carry_on_bags.value = a.carry_on_bags || 0;
     f.max_stops.value = a.max_stops ?? ""; f.price_limit.value = a.price_limit; f.checked_bag.checked = !!a.checked_bag;
+    f.classes.value = classesOf(a).join(","); f.price_limit_premium.value = a.price_limit_premium || "";
+    f.drop_alert_percent.value = String(a.drop_alert_percent || 0);
+    const ex = a.exclude_airlines || [];
+    Object.keys(AIRLINES).forEach(c => f["ex_" + c].checked = ex.includes(c));
+    f.exclude_more.value = ex.filter(c => !AIRLINES[c]).join(", ");
   }
+  togglePremLimit();
   $("main").classList.add("hidden"); $("editor").classList.remove("hidden"); window.scrollTo(0, 0);
 }
+function togglePremLimit() { $("premLimitLabel").classList.toggle("hidden", $("alarmForm").classes.value !== "economy,premium"); }
+$("alarmForm").classes.onchange = togglePremLimit;
 function closeEditor() { $("editor").classList.add("hidden"); $("main").classList.remove("hidden"); }
 
 $("alarmForm").onsubmit = async (ev) => {
@@ -292,6 +344,11 @@ $("alarmForm").onsubmit = async (ev) => {
     checked_bag: f.checked_bag.checked,
     ...(f.max_stops.value !== "" ? { max_stops: +f.max_stops.value } : {}),
     price_limit: +f.price_limit.value,
+    classes: f.classes.value.split(","),
+    ...(f.classes.value === "economy,premium" && f.price_limit_premium.value ? { price_limit_premium: +f.price_limit_premium.value } : {}),
+    ...(+f.drop_alert_percent.value ? { drop_alert_percent: +f.drop_alert_percent.value } : {}),
+    exclude_airlines: [...Object.keys(AIRLINES).filter(c => f["ex_" + c].checked),
+      ...f.exclude_more.value.split(/[ ,;]+/).map(c => c.trim().toUpperCase()).filter(c => /^[A-Z0-9]{2}$/.test(c))],
     active: editIndex == null ? true : alarms[editIndex].active !== false,
   };
   const btn = f.querySelector("button[type=submit]"); btn.disabled = true;
